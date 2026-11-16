@@ -333,12 +333,11 @@ def defect_rates(df):
     #
     # combined_cleaned = pd.concat(all_tables)
 
-    groups = df.groupby('machine')
-    table_per_machine = {}
+    clean_df = clean_log(df)
+    groups = clean_df.groupby('machine')
     rates_by_machine = {}
 
     for machine_name, machine_rows in groups:
-        table_per_machine[machine_name] = machine_rows
         total_inspected = machine_rows['inspected'].sum()
         total_defective = machine_rows['defective'].sum()
         machine_rate = total_defective / total_inspected
@@ -359,8 +358,9 @@ def log10_pvalue(df, machine='B', p0=0.03):
       numbers of inspected and defective items of this machine (over its usable batches).
       Must be accurate (relative error < 1e-6) even when the p-value is smaller than 1e-300.
     """
-    df = pd.DataFrame(df)
-    machine_rows = df.groupby('machine').get_group(machine)
+    clean_df = clean_log(df)
+
+    machine_rows = clean_df.groupby('machine').get_group(machine)
     total_inspected = machine_rows['inspected'].sum()
     total_defective = machine_rows['defective'].sum()
     X = stats.binom(total_inspected, p0)
@@ -380,4 +380,24 @@ def items_needed(df, machine='A', r=10, q=0.95):
       P(at least r of them are defective) >= q, assuming each product is defective independently
       with probability equal to the machine's estimated defect rate (from defect_rates).
     """
-    pass
+    clean_df = clean_log(df)
+    machine_rates = defect_rates(clean_df)
+    rate = machine_rates[machine]
+    threshold = q
+    X = stats.nbinom(r, rate, loc=r)
+
+    low = 0
+    high = r
+    while X.cdf(high) < threshold:
+        high = high * 2
+
+    while low < high:
+        mid = low + ((high - low) // 2)
+
+        p_defect = X.cdf(mid)
+
+        if p_defect >= threshold:
+            high = mid
+        else:
+            low = mid + 1
+    return low
