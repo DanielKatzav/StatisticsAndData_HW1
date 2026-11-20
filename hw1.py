@@ -42,12 +42,7 @@ def critical_k(n=40, p0=0.2, alpha=0.01):
     - an int: the smallest k such that P(X >= k) <= alpha for X ~ Binom(n, p0).
       (If no k in 0..n satisfies this, return n + 1.)
     """
-
-    for k in range(1, n, 1):
-        pvalue = binom_pvalue(k, n, p0)
-        if pvalue <= alpha:
-            return k
-    return n + 1
+    return int(stats.binom.isf(alpha, n, p0)) + 1
 
 
 def power(n=40, p0=0.2, p1=0.35, alpha=0.01):
@@ -85,24 +80,14 @@ def min_sample_size(p0=0.2, p1=0.35, alpha=0.01, target=0.8):
     # Starting with an exponential search
     power_n = lambda n: power(n, p0, p1, alpha)
 
-    n = 1
-    while power_n(n) < target:
-        n *= 2
-
-    # Finalize with binary search
-    low = 1
-    high = n
-    mid = low + ((high - low) // 2)
-
-    while low < high:
-        value = power_n(mid)
-        if value >= target:
-            high = mid
-        else:
-            low = mid + 1
-        mid = low + ((high - low) // 2)
-
-    return n
+    start = 1
+    end = 2
+    while True:
+        for n in range (start, end+1, 1):
+            if power_n(n) >= target:
+                return n
+        start *= 2
+        end *= 2
 
 
 ### Question 2 ###
@@ -257,7 +242,30 @@ def conv_pmf(P, Q):
     - a 2-d numpy array [[values], [probabilities]] with the distribution of X + Y,
       values sorted in increasing order (values with probability 0 may be included or omitted).
     """
-    pass
+    sums = (P[0, :, None] + Q[0, None, :]).ravel()
+    sums = sums.astype(int)
+    values = np.unique(sums, return_inverse=True)[0]
+    total_events_count_X = len(P[0])
+    total_events_count_Y = len(Q[0])
+    total_events_count_Z = len(values)
+    probabilities = []
+
+    for z in range(total_events_count_Z):
+        p_Z_at_z = 0
+        for i in range(total_events_count_X):
+            j = z - i
+            if 0 <= j < total_events_count_Y:
+                p_Z_at_z += P[1][i] * Q[1][j]
+        p_Z_at_z = float(p_Z_at_z)
+        probabilities.append(p_Z_at_z)
+
+    order = np.argsort(values)
+
+    values = values[order]
+    probabilities = probabilities[order]
+
+    Z = [values, probabilities]
+    return Z
 
 
 def nfold_pmf(P, n=2):
