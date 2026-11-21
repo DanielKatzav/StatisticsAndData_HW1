@@ -175,27 +175,32 @@ def conv_pmf(P, Q):
     - a 2-d numpy array [[values], [probabilities]] with the distribution of X + Y,
       values sorted in increasing order (values with probability 0 may be included or omitted).
     """
-    values = []
-    probabilities = []
+    # values = []
+    # probabilities = []
+    #
+    # for i in range(len(P[0])):
+    #     for j in range(len(Q[0])):
+    #         new_value = P[0][i] + Q[0][j]
+    #         new_prob = P[1][i] * Q[1][j]
+    #
+    #         found = False
+    #
+    #         for k in range(len(values)):
+    #             if new_value == values[k]:
+    #                 probabilities[k] += new_prob
+    #                 found = True
+    #                 break
+    #         if not found:
+    #             values.append(new_value)
+    #             probabilities.append(new_prob)
+    #
+    # order = np.argsort(values)
+    # return np.array([values, probabilities])[:, order]
 
-    for i in range(len(P[0])):
-        for j in range(len(Q[0])):
-            new_value = P[0][i] + Q[0][j]
-            new_prob = P[1][i] * Q[1][j]
-
-            found = False
-
-            for k in range(len(values)):
-                if new_value == values[k]:
-                    probabilities[k] += new_prob
-                    found = True
-                    break
-            if not found:
-                values.append(new_value)
-                probabilities.append(new_prob)
-
-    order = np.argsort(values)
-    return np.array([values, probabilities])[:, order]
+    sums = (P[0][:, None] + Q[0][None, :]).ravel()
+    probs = (P[1][:, None] * Q[1][None, :]).ravel()
+    values, group = np.unique(sums, return_inverse=True)
+    return np.array([values, np.bincount(group, weights=probs)])
 
 
 def nfold_pmf(P, n=2):
@@ -208,13 +213,36 @@ def nfold_pmf(P, n=2):
     - a 2-d numpy array [[values], [probabilities]] with the distribution of X_1 + ... + X_n,
       where X_1, ..., X_n are independent and each has the distribution P (sorted values).
     """
-    result = P
+    values_X = P[0].astype(int)
+    probabilities_X = P[1]
 
-    for i in range(n - 1):
-        result = conv_pmf(result, P)
+    if len(np.unique(values_X)) == 1:
+        quick_value = np.array([[n * values_X[0]], [1.0]])
+        return quick_value
 
-    order = np.argsort(result[0])
-    return result[:, order]
+    smallest_value = values_X.min()
+    shifted_values = values_X - smallest_value
+
+    step = np.gcd.reduce(shifted_values)
+    grid_values = shifted_values // step
+
+    probabilities_on_grid = np.zeros(grid_values.max() + 1)
+    for i in range(len(grid_values)):
+        probabilities_on_grid[grid_values[i]] += probabilities_X[i]
+
+    probabilities_of_sum = np.array([1.0])
+    for k in range(n):
+        probabilities_of_sum = np.convolve(probabilities_of_sum, probabilities_on_grid)
+
+    grid_sums = np.arange(len(probabilities_of_sum))
+    values_of_sum = n * smallest_value + step * grid_sums
+
+    possible = probabilities_of_sum > 0
+    values_of_sum = values_of_sum[possible]
+    probabilities_of_sum = probabilities_of_sum[possible]
+
+    Z = np.array([values_of_sum, probabilities_of_sum])
+    return Z
 
 
 ### Question 4 ###
