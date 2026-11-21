@@ -1,6 +1,6 @@
 ###### Your ID ######
-# ID1:
-# ID2:
+# ID1: 207299181
+# ID2: 203389770
 #####################
 
 # imports
@@ -377,9 +377,14 @@ def repeat_thresholds(df, alpha=0.01):
         p_same = (stats.binom.pmf(counts, batch_size, rate) ** 2).sum()
 
         # Smallest run length whose expected number of lucky runs is <= alpha
-        threshold = 2
-        while len(group) * p_same ** (threshold - 1) > alpha:
-            threshold += 1
+        if p_same >= 1:
+            # every batch in this group has the same value (e.g. all 0), so repeats are not suspicious:
+            # use a threshold that can never be reached, so nothing is removed
+            threshold = len(group) + 1
+        else:
+            threshold = 2
+            while len(group) * p_same ** (threshold - 1) > alpha:
+                threshold += 1
 
         rows.append({"machine": machine, "sensor_fw": fw, "batches": len(group),
                      "rate": rate, "p_same": p_same, "threshold": threshold})
@@ -456,6 +461,11 @@ def log10_pvalue(df, machine='B', p0=0.03):
     machine_rows = clean_df.groupby('machine').get_group(machine)
     total_inspected = machine_rows['inspected'].sum()
     total_defective = machine_rows['defective'].sum()
+
+    if total_defective <= total_inspected * p0:
+        # the p-value is not small here, so compute 1 - P(X <= D-1) accurately
+        return float(np.log1p(-stats.binom.cdf(total_defective - 1, total_inspected, p0)) / np.log(10))
+
     X = stats.binom(total_inspected, p0)
     possible_counts = np.arange(total_defective, total_inspected + 1)
     log_probs = X.logpmf(possible_counts)
