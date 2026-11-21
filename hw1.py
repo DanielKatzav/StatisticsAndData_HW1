@@ -101,17 +101,10 @@ def shots_pmf(t=10, r=3, p=0.4):
     - P(T = t): a float if t is an int, a 1-d numpy array of the same length if t is an array.
     """
 
-    T = stats.nbinom(r, p, loc=r)
-
-    is_single = np.ndim(t) == 0
-    t_array = np.atleast_1d(t)
-
-    result = np.empty(len(t_array), dtype=float)
-
-    for i, t in enumerate(t_array):
-        result[i] = T.pmf(t_array[i])
-
-    return float(result[0]) if is_single else result
+    result = stats.nbinom.pmf(np.asarray(t)-r,r,p)
+    if np.ndim(t) == 0:
+        return float(result)
+    return result
 
 
 def duel_probs(pA=0.3, rA=5, pB=0.45, rB=8):
@@ -124,71 +117,26 @@ def duel_probs(pA=0.3, rA=5, pB=0.45, rB=8):
                             P(B completes strictly before A)).
     """
 
-    threshold = pow(10, -6)
+    miss_A = stats.nbinom.ppf(1 - 1e-12, rA, pA)
+    miss_B = stats.nbinom.ppf(1 - 1e-12, rB, pB)
 
-    T_a = stats.nbinom(rA, pA, loc=rA)
-    T_b = stats.nbinom(rB, pB, loc=rB)
+    lim_A = miss_A + rA
+    lim_B = miss_B + rB
 
-    lower_attempts_player = min(rA, rB)
-    higher_attempts_player = max(rA, rB)
+    limit = int(max(lim_A, lim_B))
 
-    # Same case:
+    t = np.arange(1, limit + 1)
 
-    N = higher_attempts_player
-    delta = 0
-    p_same_attempts = 0
-    p_old = 0
+    prob_A = shots_pmf(t, rA, pA)
+    prob_B = shots_pmf(t, rB, pB)
 
-    while True:
-        for attempts in range(higher_attempts_player, N + 1):
-            p_same_attempts += T_a.pmf(attempts) * T_b.pmf(attempts)
+    P_A_wins = np.sum(prob_A * stats.binom.cdf(rB - 1, t, pB))
 
-        delta = p_same_attempts - p_old
-        if delta < threshold:
-            break
+    P_tie = np.sum(prob_A * prob_B)
 
-        p_old = p_same_attempts
+    p_b_wins = np.sum(prob_B * stats.binom.cdf(rA - 1, t, pA))
 
-        higher_attempts_player = N + 1
-        N = N * 2
-
-    # Ta < Tb case:
-    start = rA
-    N = higher_attempts_player
-    p_a_finishes_first = 0
-
-    while True:
-        for attempts in range(start, N):
-            p_a_finishes_first += T_a.pmf(attempts) * T_b.sf(attempts)
-
-        delta = p_a_finishes_first - p_old
-        if delta < threshold:
-            break
-
-        p_old = p_a_finishes_first
-
-        start = N + 1
-        N = N * 2
-
-    # Ta > Tb case:
-    start = rB
-    N = higher_attempts_player
-    p_b_finishes_first = 0
-
-    while True:
-        for attempts in range(start, N):
-            p_b_finishes_first += T_a.sf(attempts) * T_b.pmf(attempts)
-
-        delta = p_b_finishes_first - p_old
-        if delta < threshold:
-            break
-
-        p_old = p_b_finishes_first
-
-        start = N + 1
-        N = N * 2
-
-    return p_a_finishes_first, p_same_attempts, p_b_finishes_first
+    return float(P_A_wins), float(P_tie), float(p_b_wins)
 
 
 def duel_expected_length(pA=0.3, rA=5, pB=0.45, rB=8):
@@ -199,33 +147,20 @@ def duel_expected_length(pA=0.3, rA=5, pB=0.45, rB=8):
     - a float: the expected number of rounds until the FIRST of the two players completes her task.
     """
 
-    threshold = pow(10, -6)
 
-    T_a = stats.nbinom(rA, pA, loc=rA)
-    T_b = stats.nbinom(rB, pB, loc=rB)
+    lim_A = stats.nbinom.ppf(1 - 1e-12, rA, pA) + rA
+    lim_B = stats.nbinom.ppf(1 - 1e-12, rB, pB) + rB
 
-    p_M = lambda t: (T_a.pmf(t) * T_b.sf(t)
-                     + T_a.pmf(t) * T_b.pmf(t)
-                     + T_a.sf(t) * T_b.pmf(t))
+    limit = int(max(lim_A, lim_B))
 
-    start = 1
-    N = max(rA, rB)
-    expected_M = 0
-    old_expected_M = 0
+    t = np.arange(0, limit + 1)
 
-    while True:
-        for attempts in range(start, N + 1):
-            expected_M += attempts * p_M(attempts)
+    A_not_done = stats.binom.cdf(rA - 1, t, pA)
+    B_not_done = stats.binom.cdf(rB - 1, t, pB)
 
-        delta = expected_M - old_expected_M
-        if delta < threshold:
-            break
+    expected_length = np.sum(A_not_done * B_not_done)
 
-        old_expected_M = expected_M
-        start = N + 1
-        N = N * 2
-
-    return expected_M
+    return float(expected_length)
 
 
 ### Question 3 ###
@@ -240,32 +175,27 @@ def conv_pmf(P, Q):
     - a 2-d numpy array [[values], [probabilities]] with the distribution of X + Y,
       values sorted in increasing order (values with probability 0 may be included or omitted).
     """
-    sums = (P[0, :, None] + Q[0, None, :]).ravel()
-    sums = sums.astype(int)
-    values = np.unique(sums, return_inverse=True)[0]
-    total_events_count_P = len(P[0])
-    total_events_count_Q = len(Q[0])
-    total_events_count_Z = len(values)
+    values = []
     probabilities = []
 
-    for z in range(total_events_count_Z):
-        p_Z_at_z = 0
-        for i in range(total_events_count_P):
-            for j in range(total_events_count_Q):
-                if P[0][i] + Q[0][j] == values[z]:
-                    p_Z_at_z += P[1][i] * Q[1][j]
-        p_Z_at_z = float(p_Z_at_z)
-        probabilities.append(p_Z_at_z)
+    for i in range(len(P[0])):
+        for j in range(len(Q[0])):
+            new_value = P[0][i] + Q[0][j]
+            new_prob = P[1][i] * Q[1][j]
 
-    if not np.isclose(np.sum(probabilities), 1):
-        print("Problem !")
+            found = False
+
+            for k in range(len(values)):
+                if new_value == values[k]:
+                    probabilities[k] += new_prob
+                    found = True
+                    break
+            if not found:
+                values.append(new_value)
+                probabilities.append(new_prob)
 
     order = np.argsort(values)
-    values = values[order]
-    probabilities = np.array(probabilities)[order]
-    Z = np.asarray([values, probabilities])
-
-    return Z
+    return np.array([values, probabilities])[:, order]
 
 
 def nfold_pmf(P, n=2):
@@ -278,36 +208,13 @@ def nfold_pmf(P, n=2):
     - a 2-d numpy array [[values], [probabilities]] with the distribution of X_1 + ... + X_n,
       where X_1, ..., X_n are independent and each has the distribution P (sorted values).
     """
-    values_X = P[0].astype(int)
-    probabilities_X = P[1]
+    result = P
 
-    if len(np.unique(values_X)) == 1:
-        quick_value = np.array([[n * values_X[0]], [1.0]])
-        return quick_value
+    for i in range(n - 1):
+        result = conv_pmf(result, P)
 
-    smallest_value = values_X.min()
-    shifted_values = values_X - smallest_value
-
-    step = np.gcd.reduce(shifted_values)
-    grid_values = shifted_values // step
-
-    probabilities_on_grid = np.zeros(grid_values.max() + 1)
-    for i in range(len(grid_values)):
-        probabilities_on_grid[grid_values[i]] += probabilities_X[i]
-
-    probabilities_of_sum = np.array([1.0])
-    for k in range(n):
-        probabilities_of_sum = np.convolve(probabilities_of_sum, probabilities_on_grid)
-
-    grid_sums = np.arange(len(probabilities_of_sum))
-    values_of_sum = n * smallest_value + step * grid_sums
-
-    possible = probabilities_of_sum > 0
-    values_of_sum = values_of_sum[possible]
-    probabilities_of_sum = probabilities_of_sum[possible]
-
-    Z = np.array([values_of_sum, probabilities_of_sum])
-    return Z
+    order = np.argsort(result[0])
+    return result[:, order]
 
 
 ### Question 4 ###
@@ -320,25 +227,22 @@ def cc_cdf(N=20, t=60):
     - a float: P(T_N <= t), computed exactly (no simulation), with a RELATIVE error below 1e-6
       even when the probability is tiny (e.g. 1e-40).
     """
-    cupons_to_see = N
-    tries = t
+    if t < N:
+        return 0.0
 
-    answer = float(0.0)
-    if tries >= cupons_to_see:
-        probabilities_to_draw_cupons_s = np.zeros(tries + 1)
-        probabilities_to_draw_cupons_s[1] = float(1.0)
+    j = np.arange(N + 1)
+    stay = j / N
+    move = (N - j[:-1]) / N
 
-        for cupons_seen in range(2, cupons_to_see + 1, 1):
-            p_s = (cupons_to_see - cupons_seen + 1) / cupons_to_see
-            q_s = 1 - p_s
-            new_probabilities = np.zeros(tries + 1)
-            for k in range(1, tries + 1, 1):
-                for i in range(1, k, 1):
-                    new_probabilities[k] += pow(q_s, i - 1) * p_s * probabilities_to_draw_cupons_s[k - i]
-            probabilities_to_draw_cupons_s = new_probabilities
+    dp = np.zeros(N + 1)
+    dp[0] = 1.0
 
-        answer = probabilities_to_draw_cupons_s.sum()
-    return answer
+    for _ in range(t):
+        new = dp * stay
+        new[1:] += dp[:-1] * move
+        dp = new
+
+    return float(dp[N])
 
 
 def cc_partial_quantile(N=100, m=80, q=0.95):
@@ -346,7 +250,21 @@ def cc_partial_quantile(N=100, m=80, q=0.95):
     Returns:
     - an int: the smallest t such that P(at least m different coupons appear among the first t draws) >= q.
     """
-    pass
+    j = np.arange(N + 1)
+    stay = j / N
+    move = (N - j[:-1]) / N
+
+    dp = np.zeros(N + 1)
+    dp[0] = 1.0
+
+    t = 0
+    while dp[m:].sum() < q:
+        new = dp * stay
+        new[1:] += dp[:-1] * move
+        dp = new
+        t += 1
+
+    return int(t)
 
 
 ### Question 5 ###
