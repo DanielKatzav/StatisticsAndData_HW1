@@ -28,7 +28,7 @@ def binom_pvalue(k=16, n=40, p0=0.2):
     Returns:
     - a float: P(X >= k) for X ~ Binom(n, p0).
     """
-    cdf_greater = 1 - stats.binom.cdf(k - 1, n, p0)
+    cdf_greater = stats.binom.sf(k - 1, n, p0)
     return cdf_greater
 
 
