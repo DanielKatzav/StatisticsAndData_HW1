@@ -320,7 +320,25 @@ def cc_cdf(N=20, t=60):
     - a float: P(T_N <= t), computed exactly (no simulation), with a RELATIVE error below 1e-6
       even when the probability is tiny (e.g. 1e-40).
     """
-    pass
+    cupons_to_see = N
+    tries = t
+
+    answer = float(0.0)
+    if tries >= cupons_to_see:
+        probabilities_to_draw_cupons_s = np.zeros(tries + 1)
+        probabilities_to_draw_cupons_s[1] = float(1.0)
+
+        for cupons_seen in range(2, cupons_to_see + 1, 1):
+            p_s = (cupons_to_see - cupons_seen + 1) / cupons_to_see
+            q_s = 1 - p_s
+            new_probabilities = np.zeros(tries + 1)
+            for k in range(1, tries + 1, 1):
+                for i in range(1, k, 1):
+                    new_probabilities[k] += pow(q_s, i - 1) * p_s * probabilities_to_draw_cupons_s[k - i]
+            probabilities_to_draw_cupons_s = new_probabilities
+
+        answer = probabilities_to_draw_cupons_s.sum()
+    return answer
 
 
 def cc_partial_quantile(N=100, m=80, q=0.95):
