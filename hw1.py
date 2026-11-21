@@ -6,11 +6,9 @@
 # imports
 import numpy as np
 import pandas as pd
-import scipy.stats
-from IPython.lib.pretty import pretty
-from pandas.core.interchange.dataframe_protocol import DataFrame
 from scipy import stats
 import matplotlib.pyplot as plt
+from scipy.special import logsumexp
 
 
 # IMPORTANT - read before you start
@@ -83,7 +81,7 @@ def min_sample_size(p0=0.2, p1=0.35, alpha=0.01, target=0.8):
     start = 1
     end = 2
     while True:
-        for n in range (start, end+1, 1):
+        for n in range(start, end + 1, 1):
             if power_n(n) >= target:
                 return n
         start *= 2
@@ -103,7 +101,7 @@ def shots_pmf(t=10, r=3, p=0.4):
     - P(T = t): a float if t is an int, a 1-d numpy array of the same length if t is an array.
     """
 
-    T = scipy.stats.nbinom(r, p, loc=r)
+    T = stats.nbinom(r, p, loc=r)
 
     is_single = np.ndim(t) == 0
     t_array = np.atleast_1d(t)
@@ -128,8 +126,8 @@ def duel_probs(pA=0.3, rA=5, pB=0.45, rB=8):
 
     threshold = pow(10, -6)
 
-    T_a = scipy.stats.nbinom(rA, pA, loc=rA)
-    T_b = scipy.stats.nbinom(rB, pB, loc=rB)
+    T_a = stats.nbinom(rA, pA, loc=rA)
+    T_b = stats.nbinom(rB, pB, loc=rB)
 
     lower_attempts_player = min(rA, rB)
     higher_attempts_player = max(rA, rB)
@@ -203,8 +201,8 @@ def duel_expected_length(pA=0.3, rA=5, pB=0.45, rB=8):
 
     threshold = pow(10, -6)
 
-    T_a = scipy.stats.nbinom(rA, pA, loc=rA)
-    T_b = scipy.stats.nbinom(rB, pB, loc=rB)
+    T_a = stats.nbinom(rA, pA, loc=rA)
+    T_b = stats.nbinom(rB, pB, loc=rB)
 
     p_M = lambda t: (T_a.pmf(t) * T_b.sf(t)
                      + T_a.pmf(t) * T_b.pmf(t)
@@ -304,6 +302,106 @@ def cc_partial_quantile(N=100, m=80, q=0.95):
 
 ### Question 5 ###
 
+def handle_names_and_bad_values(df):
+    # Handle names
+    ## Correct those that are recording errors
+    df['machine'] = df['machine'].str.strip().str.upper()
+
+    # Keep only the ones that look exactly like that
+    valid_names = ['A', 'B', 'C', 'D']
+    df = df.loc[df['machine'].isin(valid_names)]
+
+    # Remove any inspection that has negative values or more than the products that inputted for the machine
+    df = df.loc[(df['defective'] >= 0) & (df['defective'] <= df['inspected'])]
+
+    return df
+
+
+def remove_duplicates(df):
+    # Check for exactly identical rows
+    df = df.drop_duplicates(subset=[c for c in df.columns if c != "log_line"], keep="first")
+
+    # Check if there are batch_ids that appeared more than once, if thats true, make sure it's not a recording problem
+    df = df.drop_duplicates(subset=["batch_id", "machine", "sensor_fw", "inspected", "defective"], keep="first")
+
+    # Check if there are timestamps that appeared more than once, if thats true, make sure it's not a recording problem
+    df = df.drop_duplicates(subset=["timestamp", "machine", "sensor_fw", "inspected", "defective"], keep="first")
+
+    return df
+
+
+def firmware_ratios(df):
+    # Each (machine, firmware): its defect rate / median rate of the OTHER firmware versions on that machine.
+    d = df[df["defective"] >= 0].copy()
+    d["machine"] = d["machine"].str.strip().str.upper()
+    rates = (d.groupby(["machine", "sensor_fw"])[["defective", "inspected"]].sum()
+             .assign(rate=lambda t: t["defective"] / t["inspected"]))
+    rows = []
+    for (m, fw), r in rates.iterrows():
+        others = rates.loc[m].drop(index=fw)["rate"]
+        if len(others) == 0:
+            continue
+        rows.append({"machine": m, "sensor_fw": fw, "rate": r["rate"],
+                     "others_rate": others.median(), "ratio": r["rate"] / others.median()})
+    return pd.DataFrame(rows)
+
+
+def detect_scaled_firmware(df, tol=0.25, max_factor=10):
+    # {firmware: k} for firmware versions whose rate is about k times the others (k >= 2) and
+    # whose every recorded value is divisible by k.
+    ratios = firmware_ratios(df)
+    d = df[df["defective"] >= 0]
+    scaled = {}
+    for fw, g in ratios.groupby("sensor_fw"):
+        ratio = g["ratio"].median()
+        k = int(round(ratio))
+        if not 2 <= k <= max_factor or abs(ratio - k) > tol:
+            continue
+        if (d.loc[d["sensor_fw"] == fw, "defective"] % k == 0).all():
+            scaled[fw] = k
+    return scaled
+
+
+def scale_firmware_defective_output(df):
+    df = df.copy()
+    for fw, k in detect_scaled_firmware(df).items():
+        rows = (df["sensor_fw"] == fw) & (df["defective"] >= 0)
+        df.loc[rows, "defective"] //= k
+    return df
+
+
+def repeat_thresholds(df, alpha=0.01):
+    rows = []
+    for (machine, fw), group in df.groupby(["machine", "sensor_fw"]):
+        # Defect rate and typical batch size of this machine + firmware
+        rate = group["defective"].sum() / group["inspected"].sum()
+        batch_size = round(group["inspected"].mean())
+
+        # Chance that two batches get the same number of defective items by luck
+        counts = np.arange(batch_size + 1)
+        p_same = (stats.binom.pmf(counts, batch_size, rate) ** 2).sum()
+
+        # Smallest run length whose expected number of lucky runs is <= alpha
+        threshold = 2
+        while len(group) * p_same ** (threshold - 1) > alpha:
+            threshold += 1
+
+        rows.append({"machine": machine, "sensor_fw": fw, "batches": len(group),
+                     "rate": rate, "p_same": p_same, "threshold": threshold})
+
+    return pd.DataFrame(rows).set_index(["machine", "sensor_fw"])
+
+
+def remove_stuck_runs(df, thresholds):
+    # Keep the first value of a run that is at least `threshold` long, drop its repeats.
+    df = df.sort_values(["machine", "log_line"])
+    run = (df["defective"] != df.groupby("machine")["defective"].shift()).cumsum()
+    run_len = df.groupby(run)["defective"].transform("size")
+    is_repeat = df.groupby(run).cumcount() > 0
+    limit = df.join(thresholds["threshold"], on=["machine", "sensor_fw"])["threshold"]
+    return df[~(is_repeat & (run_len >= limit))].sort_index()
+
+
 def clean_log(df):
     """
     Input:
@@ -314,15 +412,14 @@ def clean_log(df):
       determined from the log) and (at least) the columns: batch_id, machine, inspected, defective,
       holding the TRUE values. Machine names must be exactly 'A', 'B', 'C' or 'D'.
     """
-    valid_machine_names = ['A', 'B', 'C', 'D']
-    df = df[["batch_id", "machine", "inspected", "defective"]]
 
-    df = df.loc[df['machine'].isin(valid_machine_names)]
-    df = df.loc[
-        (df['defective'] >= 0) & (df['defective'] <= df['inspected'])
-        ]
+    df_no_names_and_bad_values = handle_names_and_bad_values(df)
+    df_no_duplicates = remove_duplicates(df_no_names_and_bad_values)
+    df_scaled_fw = scale_firmware_defective_output(df_no_duplicates)
+    df_no_faulty_sensors = remove_stuck_runs(df_scaled_fw, repeat_thresholds(df_scaled_fw))
+    cleaned_df = df_no_faulty_sensors[["batch_id", "machine", "inspected", "defective"]]
 
-    return df
+    return cleaned_df
 
 
 def defect_rates(df):
@@ -334,13 +431,6 @@ def defect_rates(df):
     - a dict {machine: estimated defect rate}, e.g. {'A': 0.031, 'B': 0.052, 'C': 0.044, 'D': 0.027}.
       The estimated rate of a machine = (total defective items) / (total inspected items) over its usable batches.
     """
-    # all_tables = []
-    # for cleaned_table in df.values():
-    #     all_tables.append(cleaned_table)
-    #
-    #
-    # combined_cleaned = pd.concat(all_tables)
-
     clean_df = clean_log(df)
     groups = clean_df.groupby('machine')
     rates_by_machine = {}
@@ -374,7 +464,7 @@ def log10_pvalue(df, machine='B', p0=0.03):
     X = stats.binom(total_inspected, p0)
     possible_counts = np.arange(total_defective, total_inspected + 1)
     log_probs = X.logpmf(possible_counts)
-    log_pvalue = scipy.special.logsumexp(log_probs) / np.log(10)
+    log_pvalue = logsumexp(log_probs) / np.log(10)
     return log_pvalue
 
 
@@ -388,8 +478,7 @@ def items_needed(df, machine='A', r=10, q=0.95):
       P(at least r of them are defective) >= q, assuming each product is defective independently
       with probability equal to the machine's estimated defect rate (from defect_rates).
     """
-    clean_df = clean_log(df)
-    machine_rates = defect_rates(clean_df)
+    machine_rates = defect_rates(df)
     rate = machine_rates[machine]
     threshold = q
     X = stats.nbinom(r, rate, loc=r)
