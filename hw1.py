@@ -243,26 +243,28 @@ def conv_pmf(P, Q):
     sums = (P[0, :, None] + Q[0, None, :]).ravel()
     sums = sums.astype(int)
     values = np.unique(sums, return_inverse=True)[0]
-    total_events_count_X = len(P[0])
-    total_events_count_Y = len(Q[0])
+    total_events_count_P = len(P[0])
+    total_events_count_Q = len(Q[0])
     total_events_count_Z = len(values)
     probabilities = []
 
     for z in range(total_events_count_Z):
         p_Z_at_z = 0
-        for i in range(total_events_count_X):
-            j = z - i
-            if 0 <= j < total_events_count_Y:
-                p_Z_at_z += P[1][i] * Q[1][j]
+        for i in range(total_events_count_P):
+            for j in range(total_events_count_Q):
+                if P[0][i] + Q[0][j] == values[z]:
+                    p_Z_at_z += P[1][i] * Q[1][j]
         p_Z_at_z = float(p_Z_at_z)
         probabilities.append(p_Z_at_z)
 
+    if not np.isclose(np.sum(probabilities), 1):
+        print("Problem !")
+
     order = np.argsort(values)
-
     values = values[order]
-    probabilities = probabilities[order]
+    probabilities = np.array(probabilities)[order]
+    Z = np.asarray([values, probabilities])
 
-    Z = [values, probabilities]
     return Z
 
 
@@ -276,7 +278,36 @@ def nfold_pmf(P, n=2):
     - a 2-d numpy array [[values], [probabilities]] with the distribution of X_1 + ... + X_n,
       where X_1, ..., X_n are independent and each has the distribution P (sorted values).
     """
-    pass
+    values_X = P[0].astype(int)
+    probabilities_X = P[1]
+
+    if len(np.unique(values_X)) == 1:
+        quick_value = np.array([[n * values_X[0]], [1.0]])
+        return quick_value
+
+    smallest_value = values_X.min()
+    shifted_values = values_X - smallest_value
+
+    step = np.gcd.reduce(shifted_values)
+    grid_values = shifted_values // step
+
+    probabilities_on_grid = np.zeros(grid_values.max() + 1)
+    for i in range(len(grid_values)):
+        probabilities_on_grid[grid_values[i]] += probabilities_X[i]
+
+    probabilities_of_sum = np.array([1.0])
+    for k in range(n):
+        probabilities_of_sum = np.convolve(probabilities_of_sum, probabilities_on_grid)
+
+    grid_sums = np.arange(len(probabilities_of_sum))
+    values_of_sum = n * smallest_value + step * grid_sums
+
+    possible = probabilities_of_sum > 0
+    values_of_sum = values_of_sum[possible]
+    probabilities_of_sum = probabilities_of_sum[possible]
+
+    Z = np.array([values_of_sum, probabilities_of_sum])
+    return Z
 
 
 ### Question 4 ###
